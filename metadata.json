@@ -1,0 +1,12 @@
+{
+  "name": "二手数码智能识别检测系统 v3.0",
+  "description": "基于 AI 的二手数码物品智能识别、瑕疵检测与实时估价系统。支持数据看板、批量识别、摄像头实时扫描及手动修正重估价功能。",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "AI Recognition",
+    "Price Estimation",
+    "Data Visualization"
+  ]
+}
