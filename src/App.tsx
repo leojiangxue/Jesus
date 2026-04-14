@@ -66,6 +66,24 @@ import {
 // --- AI Initialization ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
+const STANDARD_CATEGORIES = ["手机", "笔记本电脑", "平板电脑", "耳机/音响", "智能穿戴", "键盘", "鼠标", "显示器", "数码相机", "游戏机", "其他数码"];
+
+const normalizeCategory = (cat: string): string => {
+  if (!cat) return '其他数码';
+  const lowerCat = cat.toLowerCase();
+  if (lowerCat.includes('手机') || lowerCat.includes('phone') || lowerCat.includes('mobile')) return '手机';
+  if (lowerCat.includes('笔记本') || lowerCat.includes('laptop') || lowerCat.includes('macbook') || lowerCat.includes('电脑')) return '笔记本电脑';
+  if (lowerCat.includes('平板') || lowerCat.includes('tablet') || lowerCat.includes('ipad')) return '平板电脑';
+  if (lowerCat.includes('耳机') || lowerCat.includes('earbuds') || lowerCat.includes('airpods') || lowerCat.includes('headphone') || lowerCat.includes('音响')) return '耳机/音响';
+  if (lowerCat.includes('手表') || lowerCat.includes('watch') || lowerCat.includes('手环') || lowerCat.includes('穿戴')) return '智能穿戴';
+  if (lowerCat.includes('键盘') || lowerCat.includes('keyboard')) return '键盘';
+  if (lowerCat.includes('鼠标') || lowerCat.includes('mouse')) return '鼠标';
+  if (lowerCat.includes('显示器') || lowerCat.includes('monitor') || lowerCat.includes('屏幕')) return '显示器';
+  if (lowerCat.includes('相机') || lowerCat.includes('camera') || lowerCat.includes('单反') || lowerCat.includes('微单')) return '数码相机';
+  if (lowerCat.includes('游戏机') || lowerCat.includes('console') || lowerCat.includes('switch') || lowerCat.includes('ps5')) return '游戏机';
+  return '其他数码';
+};
+
 // --- Layout Components ---
 
 const Sidebar = ({ historyCount }: { historyCount: number }) => {
@@ -179,7 +197,8 @@ const Dashboard = ({ history }: { history: RecognitionResult[] }) => {
     const todayCount = history.filter(h => h.timestamp.startsWith(today)).length;
     
     const categories = history.reduce((acc, curr) => {
-      acc[curr.category] = (acc[curr.category] || 0) + 1;
+      const normalizedCat = normalizeCategory(curr.category);
+      acc[normalizedCat] = (acc[normalizedCat] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
 
@@ -593,10 +612,16 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
                 <div className="space-y-3">
                   <label className="text-[10px] text-slate-400 uppercase font-black tracking-widest">设备品类</label>
                   {isEditing ? (
-                    <input className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all" value={editedResult.category} onChange={e => setEditedResult({...editedResult, category: e.target.value})} />
+                    <select 
+                      className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-white" 
+                      value={normalizeCategory(editedResult.category)} 
+                      onChange={e => setEditedResult({...editedResult, category: e.target.value})}
+                    >
+                      {STANDARD_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <Badge className="bg-blue-50 text-blue-600 border-0 hover:bg-blue-100 px-3 py-1 text-sm">{editedResult.category}</Badge>
+                      <Badge className="bg-blue-50 text-blue-600 border-0 hover:bg-blue-100 px-3 py-1 text-sm">{normalizeCategory(editedResult.category)}</Badge>
                     </div>
                   )}
                 </div>
@@ -751,7 +776,7 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
                 
                 JSON Schema:
                 {
-                  "category": "string",
+                  "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                   "brand": "string",
                   "model": "string",
                   "defects": [{ "type": "string", "location": "string", "severity": "string" }],
@@ -916,7 +941,7 @@ export default function App() {
               
               JSON Schema:
               {
-                "category": "string (手机/笔记本电脑/平板电脑/无线耳机/键盘/鼠标/显示器/数码相机)",
+                "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                 "brand": "string",
                 "model": "string",
                 "defects": [{ "type": "划痕"|"磕碰"|"磨损", "location": "string", "severity": "轻微"|"明显" }],
