@@ -33,7 +33,12 @@ import {
   ChevronRight,
   LogOut,
   MoreVertical,
-  Plus
+  Plus,
+  Bell,
+  Shield,
+  Globe,
+  Palette,
+  Database
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
@@ -97,7 +102,6 @@ const Sidebar = ({ historyCount }: { historyCount: number }) => {
 
   const dataItems = [
     { icon: <History size={20} />, label: "历史记录", path: "/history", badge: historyCount },
-    { icon: <BarChart3 size={20} />, label: "数据统计", path: "/statistics" },
   ];
 
   const systemItems = [
@@ -237,9 +241,11 @@ const Dashboard = ({ history }: { history: RecognitionResult[] }) => {
           <h2 className="text-3xl font-bold text-slate-900">数据看板</h2>
           <p className="text-slate-500">实时监控数码产品识别与评估数据</p>
         </div>
-        <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
-          <Plus size={18} /> 新增识别
-        </Button>
+        <Link to="/">
+          <Button className="gap-2 bg-blue-600 hover:bg-blue-700">
+            <Plus size={18} /> 新增识别
+          </Button>
+        </Link>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -362,11 +368,11 @@ const CameraModal = ({ onCapture }: { onCapture: (file: File) => void }) => {
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { setIsOpen(open); if (open) startCamera(); else stopCamera(); }}>
-      <DialogTrigger asChild>
-        <div className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-slate-200 bg-white hover:bg-slate-50 h-10 px-4 py-2 gap-2 cursor-pointer">
+      <DialogTrigger render={
+        <button className="inline-flex items-center justify-center rounded-md text-sm font-medium border border-slate-200 bg-white hover:bg-slate-50 h-10 px-4 py-2 gap-2 cursor-pointer">
           <Camera size={18} /> 摄像头识别
-        </div>
-      </DialogTrigger>
+        </button>
+      } />
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>拍摄二手数码物品</DialogTitle>
@@ -500,6 +506,20 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
             { text: `
               Based on the following updated details for a second-hand digital item, provide a new price estimation.
               
+              CRITICAL PRICING ALGORITHM:
+              You MUST calculate the second-hand price using this strict step-by-step framework:
+              1. Original Retail Price (ORP): Estimate the launch price in CNY.
+              2. Age Depreciation: Deduct 20-30% for the first year, and 10-15% for each subsequent year.
+              3. Condition Multiplier:
+                 - Mint (No defects): 90-95% of depreciated value
+                 - Good (Minor scratches): 75-85% of depreciated value
+                 - Fair (Noticeable wear/dents): 60-70% of depreciated value
+                 - Poor (Cracks, functional issues): 30-50% of depreciated value
+              4. Market Demand Adjustment: Adjust +/- 10% based on current brand/model popularity.
+              5. Final Calculation: Apply the above to determine a realistic Xianyu (闲鱼) market price range.
+              
+              Do NOT overestimate. Be extremely realistic and conservative.
+
               Details:
               Category: ${updatedRes.category}
               Brand: ${updatedRes.brand}
@@ -511,7 +531,7 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
                 "min": number,
                 "max": number,
                 "currency": "CNY",
-                "reasoning": "string in Chinese explaining the price based on current market and condition"
+                "reasoning": "string in Chinese detailing the step-by-step calculation: Original Price -> Age Depreciation -> Condition Multiplier -> Market Adjustment -> Final Price"
               }
             ` }
           ]
@@ -519,7 +539,8 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
         config: { responseMimeType: "application/json" }
       });
 
-      const priceData = JSON.parse(response.text);
+      const priceText = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      const priceData = JSON.parse(priceText);
       const finalRes = { ...updatedRes, estimatedPrice: priceData };
       setEditedResult(finalRes);
       onUpdate(finalRes);
@@ -732,6 +753,7 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
 const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: RecognitionResult) => void }) => {
   const [files, setFiles] = useState<{file: File, id: string, status: 'pending'|'processing'|'success'|'error', result?: RecognitionResult, preview: string}[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedResult, setSelectedResult] = useState<RecognitionResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = (newFiles: FileList | File[]) => {
@@ -751,16 +773,19 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
 
   const startBatch = async () => {
     setIsProcessing(true);
-    for (let i = 0; i < files.length; i++) {
-      if (files[i].status !== 'pending') continue;
+    try {
+      for (let i = 0; i < files.length; i++) {
+        if (files[i].status !== 'pending') continue;
       
-      setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'processing' } : f));
+      setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'processing' } : f));
       
       try {
+        toast.info(`正在识别第 ${i + 1}/${files.length} 张图片...`);
         const file = files[i].file;
         const reader = new FileReader();
-        const base64Promise = new Promise<string>((resolve) => {
+        const base64Promise = new Promise<string>((resolve, reject) => {
           reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = (error) => reject(error);
           reader.readAsDataURL(file);
         });
         const base64Data = await base64Promise;
@@ -774,16 +799,30 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
                 You are an AI specialized in second-hand digital item recognition, simulating a YOLOv8 model.
                 Analyze the image and return a JSON object.
                 
+                CRITICAL PRICING ALGORITHM:
+                You MUST calculate the second-hand price using this strict step-by-step framework:
+                1. Original Retail Price (ORP): Estimate the launch price in CNY.
+                2. Age Depreciation: Deduct 20-30% for the first year, and 10-15% for each subsequent year.
+                3. Condition Multiplier:
+                   - Mint (No defects): 90-95% of depreciated value
+                   - Good (Minor scratches): 75-85% of depreciated value
+                   - Fair (Noticeable wear/dents): 60-70% of depreciated value
+                   - Poor (Cracks, functional issues): 30-50% of depreciated value
+                4. Market Demand Adjustment: Adjust +/- 10% based on current brand/model popularity.
+                5. Final Calculation: Apply the above to determine a realistic Xianyu (闲鱼) market price range.
+                
+                Do NOT overestimate. Be extremely realistic and conservative.
+                
                 JSON Schema:
                 {
                   "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                   "brand": "string",
                   "model": "string",
-                  "defects": [{ "type": "string", "location": "string", "severity": "string" }],
+                  "defects": [{ "type": "划痕"|"磕碰"|"磨损", "location": "string", "severity": "轻微"|"明显" }],
                   "boxes": [{ "label": "string", "box_2d": [0, 0, 100, 100], "type": "item"|"defect" }],
                   "confidence": 0.95,
                   "inferenceTime": 120,
-                  "estimatedPrice": { "min": 1000, "max": 2000, "currency": "CNY", "reasoning": "string" }
+                  "estimatedPrice": { "min": 1000, "max": 2000, "currency": "CNY", "reasoning": "string in Chinese detailing the step-by-step calculation: Original Price -> Age Depreciation -> Condition Multiplier -> Market Adjustment -> Final Price" }
                 }
                 
                 If no digital item is found, return { "error": "未检测到二手数码物品" }.
@@ -794,7 +833,8 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
           config: { responseMimeType: "application/json" }
         });
 
-        const data = JSON.parse(response.text);
+        const text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+        const data = JSON.parse(text);
         if (data.error) throw new Error(data.error);
 
         const result: RecognitionResult = {
@@ -805,15 +845,33 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
           status: 'success'
         };
 
-        setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'success', result } : f));
+        setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'success', result } : f));
         saveToHistory(result);
       } catch (err) {
-        setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'error' } : f));
+        console.error("Batch processing error:", err);
+        toast.error(`图片 ${i + 1} 识别失败: ${err instanceof Error ? err.message : String(err)}`);
+        setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'error' } : f));
       }
     }
-    setIsProcessing(false);
     toast.success("批量识别完成");
-  };
+  } finally {
+    setIsProcessing(false);
+  }
+};
+
+  if (selectedResult) {
+    return (
+      <ResultPage 
+        result={selectedResult} 
+        onReset={() => setSelectedResult(null)} 
+        onUpdate={(res) => {
+          setSelectedResult(res);
+          setFiles(prev => prev.map(f => f.result?.id === res.id ? { ...f, result: res } : f));
+          saveToHistory(res);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="p-8 space-y-8 animate-in fade-in duration-500">
@@ -851,9 +909,9 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {files.map((f, i) => (
             <Card key={f.id} className="overflow-hidden border-0 shadow-sm relative group">
-              <div className="aspect-video bg-slate-100 relative">
+              <div className="aspect-video bg-slate-100 relative cursor-pointer" onClick={() => f.result && setSelectedResult(f.result)}>
                 <img src={f.preview} className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-black/20" />
+                <div className="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors" />
                 <div className="absolute top-3 right-3">
                   {f.status === 'pending' && <Badge variant="secondary" className="bg-white/90">等待中</Badge>}
                   {f.status === 'processing' && <Badge className="bg-blue-500 animate-pulse">识别中...</Badge>}
@@ -867,10 +925,10 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
                   </Button>
                 )}
               </div>
-              <CardContent className="p-4">
+              <CardContent className="p-4 cursor-pointer" onClick={() => f.result && setSelectedResult(f.result)}>
                 {f.result ? (
                   <>
-                    <h3 className="font-bold text-slate-900 truncate">{f.result.brand} {f.result.model}</h3>
+                    <h3 className="font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">{f.result.brand} {f.result.model}</h3>
                     <div className="flex items-center justify-between mt-2">
                       <Badge variant="outline" className="text-xs">{f.result.category}</Badge>
                       {f.result.estimatedPrice && (
@@ -888,6 +946,189 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
           ))}
         </div>
       )}
+    </div>
+  );
+};
+
+const ProfilePage = ({ history }: { history: RecognitionResult[] }) => {
+  const totalItems = history.length;
+  const totalValue = history.reduce((acc, curr) => acc + (curr.estimatedPrice?.min || 0), 0);
+
+  return (
+    <div className="p-8 space-y-8 animate-in fade-in duration-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900">个人中心</h2>
+          <p className="text-slate-500">管理您的个人信息与账户安全</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <Card className="md:col-span-1 border-0 shadow-sm">
+          <CardContent className="p-8 flex flex-col items-center text-center">
+            <div className="h-32 w-32 rounded-full bg-slate-100 border-4 border-white shadow-lg overflow-hidden mb-6 relative group cursor-pointer">
+              <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="Avatar" className="w-full h-full object-cover" />
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <Camera className="text-white" size={24} />
+              </div>
+            </div>
+            <h3 className="text-2xl font-bold text-slate-900">管理员账号</h3>
+            <p className="text-slate-500 mb-6">超级管理员</p>
+            <div className="w-full space-y-3">
+              <Button className="w-full gap-2 bg-blue-600 hover:bg-blue-700" onClick={() => toast.info("资料编辑功能开发中")}><Edit3 size={16} /> 编辑资料</Button>
+              <Button variant="outline" className="w-full gap-2 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => toast.info("退出登录功能开发中")}><LogOut size={16} /> 退出登录</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="md:col-span-2 space-y-8">
+          <Card className="border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2"><User size={20} className="text-blue-500" /> 基本信息</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <label className="text-sm font-medium text-slate-500">用户昵称</label>
+                  <p className="text-slate-900 font-medium mt-1">管理员账号</p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-500">账号角色</label>
+                  <p className="text-slate-900 font-medium mt-1">超级管理员</p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-500">绑定邮箱</label>
+                  <p className="text-slate-900 font-medium mt-1">admin@example.com</p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-500">注册时间</label>
+                  <p className="text-slate-900 font-medium mt-1">2023-10-01</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2"><BarChart3 size={20} className="text-blue-500" /> 我的成就</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-blue-50 p-6 rounded-2xl">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                      <Camera size={20} />
+                    </div>
+                    <span className="text-slate-600 font-medium">累计识别</span>
+                  </div>
+                  <p className="text-3xl font-black text-slate-900">{totalItems} <span className="text-base font-normal text-slate-500">件</span></p>
+                </div>
+                <div className="bg-green-50 p-6 rounded-2xl">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center text-green-600">
+                      <Coins size={20} />
+                    </div>
+                    <span className="text-slate-600 font-medium">累计估值</span>
+                  </div>
+                  <p className="text-3xl font-black text-slate-900">¥{totalValue.toLocaleString()}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const SettingsPage = ({ onClearHistory }: { onClearHistory: () => void }) => {
+  const [isClearDialogOpen, setIsClearDialogOpen] = useState(false);
+
+  return (
+    <div className="p-8 space-y-8 animate-in fade-in duration-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900">系统设置</h2>
+          <p className="text-slate-500">自定义您的应用偏好与数据管理</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+        <div className="md:col-span-1 space-y-2">
+          <Button variant="ghost" className="w-full justify-start gap-3 bg-blue-50 text-blue-700 hover:bg-blue-100"><Palette size={18} /> 外观设置</Button>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-100" onClick={() => toast.info("语言与地区设置开发中")}><Globe size={18} /> 语言与地区</Button>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-100" onClick={() => toast.info("消息通知设置开发中")}><Bell size={18} /> 消息通知</Button>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-100" onClick={() => toast.info("隐私与安全设置开发中")}><Shield size={18} /> 隐私与安全</Button>
+          <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-100" onClick={() => toast.info("数据管理设置开发中")}><Database size={18} /> 数据管理</Button>
+        </div>
+
+        <div className="md:col-span-3 space-y-8">
+          <Card className="border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg">外观设置</CardTitle>
+              <CardDescription>选择您喜欢的主题配色</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-slate-900">深色模式</p>
+                  <p className="text-sm text-slate-500">在低光环境下保护眼睛</p>
+                </div>
+                <div className="h-6 w-11 bg-slate-200 rounded-full relative cursor-not-allowed opacity-50">
+                  <div className="h-5 w-5 bg-white rounded-full absolute left-0.5 top-0.5 shadow-sm" />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-slate-900">主题色</p>
+                  <p className="text-sm text-slate-500">选择应用的主色调</p>
+                </div>
+                <div className="flex gap-2">
+                  {['bg-blue-600', 'bg-indigo-600', 'bg-emerald-600', 'bg-rose-600', 'bg-amber-600'].map(color => (
+                    <div key={color} className={`h-8 w-8 rounded-full ${color} cursor-pointer border-2 border-transparent hover:border-slate-300 transition-all ${color === 'bg-blue-600' ? 'ring-2 ring-offset-2 ring-blue-600' : ''}`} />
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg text-red-600">危险操作</CardTitle>
+              <CardDescription>这些操作不可逆，请谨慎操作</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-slate-900">清空所有历史记录</p>
+                  <p className="text-sm text-slate-500">删除本地存储的所有识别与估价数据</p>
+                </div>
+                <Dialog open={isClearDialogOpen} onOpenChange={setIsClearDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button variant="destructive">清空数据</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>确认清空历史记录？</DialogTitle>
+                    </DialogHeader>
+                    <div className="py-4">
+                      <p className="text-slate-600">此操作将永久删除所有本地保存的识别和估价记录，且不可恢复。</p>
+                    </div>
+                    <div className="flex justify-end gap-3">
+                      <Button variant="outline" onClick={() => setIsClearDialogOpen(false)}>取消</Button>
+                      <Button variant="destructive" onClick={() => {
+                        onClearHistory();
+                        setIsClearDialogOpen(false);
+                        toast.success("历史记录已清空");
+                      }}>确认清空</Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 };
@@ -915,7 +1156,11 @@ export default function App() {
     setHistory(prev => {
       const newItems = Array.isArray(res) ? res : [res];
       const newHistory = [...newItems, ...prev].filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i).slice(0, 200);
-      localStorage.setItem("recognition_history_v3", JSON.stringify(newHistory));
+      try {
+        localStorage.setItem("recognition_history_v3", JSON.stringify(newHistory));
+      } catch (e) {
+        console.error("Failed to save history to localStorage:", e);
+      }
       return newHistory;
     });
   };
@@ -924,8 +1169,9 @@ export default function App() {
     setIsRecognizing(true);
     try {
       const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
+      const base64Promise = new Promise<string>((resolve, reject) => {
         reader.onload = () => resolve((reader.result as string).split(",")[1]);
+        reader.onerror = (error) => reject(error);
         reader.readAsDataURL(file);
       });
       const base64Data = await base64Promise;
@@ -939,16 +1185,30 @@ export default function App() {
               You are an AI specialized in second-hand digital item recognition, simulating a YOLOv8 model.
               Analyze the image and return a JSON object.
               
+              CRITICAL PRICING ALGORITHM:
+              You MUST calculate the second-hand price using this strict step-by-step framework:
+              1. Original Retail Price (ORP): Estimate the launch price in CNY.
+              2. Age Depreciation: Deduct 20-30% for the first year, and 10-15% for each subsequent year.
+              3. Condition Multiplier:
+                 - Mint (No defects): 90-95% of depreciated value
+                 - Good (Minor scratches): 75-85% of depreciated value
+                 - Fair (Noticeable wear/dents): 60-70% of depreciated value
+                 - Poor (Cracks, functional issues): 30-50% of depreciated value
+              4. Market Demand Adjustment: Adjust +/- 10% based on current brand/model popularity.
+              5. Final Calculation: Apply the above to determine a realistic Xianyu (闲鱼) market price range.
+              
+              Do NOT overestimate. Be extremely realistic and conservative.
+              
               JSON Schema:
               {
                 "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                 "brand": "string",
                 "model": "string",
                 "defects": [{ "type": "划痕"|"磕碰"|"磨损", "location": "string", "severity": "轻微"|"明显" }],
-                "boxes": [{ "label": "string", "box_2d": [ymin, xmin, ymax, xmax], "type": "item"|"defect" }],
-                "confidence": number (0-1),
-                "inferenceTime": number (ms),
-                "estimatedPrice": { "min": number, "max": number, "currency": "CNY", "reasoning": "string in Chinese" }
+                "boxes": [{ "label": "string", "box_2d": [0, 0, 100, 100], "type": "item"|"defect" }],
+                "confidence": 0.95,
+                "inferenceTime": 120,
+                "estimatedPrice": { "min": 1000, "max": 2000, "currency": "CNY", "reasoning": "string in Chinese detailing the step-by-step calculation: Original Price -> Age Depreciation -> Condition Multiplier -> Market Adjustment -> Final Price" }
               }
               
               If no digital item is found, return { "error": "未检测到二手数码物品" }.
@@ -959,7 +1219,8 @@ export default function App() {
         config: { responseMimeType: "application/json" }
       });
 
-      const data = JSON.parse(response.text);
+      const text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      const data = JSON.parse(text);
       if (data.error) {
         toast.error(data.error);
         return;
@@ -993,26 +1254,28 @@ export default function App() {
           
           <main className="flex-1 flex flex-col min-w-0">
             <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8 sticky top-0 z-40">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4 cursor-pointer" onClick={() => toast.info("全局搜索功能开发中")}>
                 <div className="h-8 w-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
                   <Search size={16} />
                 </div>
                 <span className="text-sm text-slate-400 font-medium">搜索功能、全局设置...</span>
               </div>
               <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" className="text-slate-400">
+                <Button variant="ghost" size="icon" className="text-slate-400" onClick={() => window.location.reload()}>
                   <RotateCcw size={18} />
                 </Button>
                 <div className="h-8 w-[1px] bg-slate-100 mx-2" />
-                <div className="flex items-center gap-3">
-                  <div className="text-right hidden sm:block">
-                    <p className="text-xs font-bold text-slate-900">管理员账号</p>
-                    <p className="text-[10px] text-slate-400">超级管理员</p>
+                <Link to="/profile">
+                  <div className="flex items-center gap-3 cursor-pointer group">
+                    <div className="text-right hidden sm:block">
+                      <p className="text-xs font-bold text-slate-900 group-hover:text-blue-600 transition-colors">管理员账号</p>
+                      <p className="text-[10px] text-slate-400">超级管理员</p>
+                    </div>
+                    <div className="h-10 w-10 rounded-full bg-slate-100 border-2 border-white shadow-sm overflow-hidden group-hover:border-blue-100 transition-colors">
+                      <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="Avatar" />
+                    </div>
                   </div>
-                  <div className="h-10 w-10 rounded-full bg-slate-100 border-2 border-white shadow-sm overflow-hidden">
-                    <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="Avatar" />
-                  </div>
-                </div>
+                </Link>
               </div>
             </header>
 
@@ -1071,8 +1334,9 @@ export default function App() {
                     </div>
                   </div>
                 } />
-                <Route path="/statistics" element={<Dashboard history={history} />} />
                 <Route path="/batch" element={<BatchRecognitionPage saveToHistory={saveToHistory} />} />
+                <Route path="/profile" element={<ProfilePage history={history} />} />
+                <Route path="/settings" element={<SettingsPage onClearHistory={() => { setHistory([]); localStorage.removeItem("recognition_history_v3"); }} />} />
                 <Route path="/camera" element={
                   <div className="p-8">
                     <div className="mb-12">
