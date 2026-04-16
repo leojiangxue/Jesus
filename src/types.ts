@@ -1,7 +1,7 @@
 export interface Defect {
-  type: "划痕" | "磕碰" | "磨损";
+  type: "划痕" | "磕碰" | "磨损" | "裂痕" | "碎裂" | "掉漆" | "其他";
   location: string;
-  severity: "轻微" | "明显";
+  severity: "轻微" | "明显" | "严重";
 }
 
 export interface BoundingBox {
@@ -12,6 +12,7 @@ export interface BoundingBox {
 
 export interface RecognitionResult {
   id: string;
+  visual_analysis?: string; // Added to force Chain of Thought
   category: string;
   brand: string;
   model: string;
@@ -21,6 +22,7 @@ export interface RecognitionResult {
   inferenceTime: number;
   timestamp: string;
   imageUrl: string;
+  imageUrls?: string[]; // Added for comprehensive recognition
   status: 'success' | 'error';
   estimatedPrice?: {
     min: number;

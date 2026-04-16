@@ -38,7 +38,8 @@ import {
   Shield,
   Globe,
   Palette,
-  Database
+  Database,
+  Scan
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Separator } from "@/components/ui/separator";
 import { Toaster, toast } from "sonner";
 import { GoogleGenAI } from "@google/genai";
+import localforage from "localforage";
+import { detectDigitalItems, cropImage, getCropInfo } from "./lib/detector";
 import { RecognitionResult, Defect, BoundingBox } from "./types";
 import html2canvas from "html2canvas";
 import confetti from "canvas-confetti";
@@ -96,6 +99,7 @@ const Sidebar = ({ historyCount }: { historyCount: number }) => {
   const menuItems = [
     { icon: <LayoutDashboard size={20} />, label: "数据看板", path: "/dashboard" },
     { icon: <Upload size={20} />, label: "单张识别", path: "/" },
+    { icon: <Scan size={20} />, label: "全面识别", path: "/comprehensive" },
     { icon: <Layers size={20} />, label: "批量识别", path: "/batch" },
     { icon: <Camera size={20} />, label: "摄像头识别", path: "/camera" },
   ];
@@ -495,6 +499,12 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
   const [isEditing, setIsEditing] = useState(false);
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
   const [editedResult, setEditedResult] = useState(result);
+  const [mainImage, setMainImage] = useState(result.imageUrl);
+
+  useEffect(() => {
+    setEditedResult(result);
+    setMainImage(result.imageUrl);
+  }, [result]);
 
   const reEstimatePrice = async (updatedRes: RecognitionResult) => {
     setIsUpdatingPrice(true);
@@ -506,6 +516,13 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
             { text: `
               Based on the following updated details for a second-hand digital item, provide a new price estimation.
               
+              CRITICAL INSPECTION DIRECTIVE:
+              You must act as a strict, eagle-eyed quality inspector. Scrutinize the image for ANY physical damage. Pay special attention to:
+              - Screens and Back Covers: Look for cracks (裂痕), shatters (碎裂), or deep scratches.
+              - Edges and Corners: Look for dents (磕碰) and paint peeling (掉漆).
+              - General: Look for wear and tear (磨损).
+              If you see a crack, you MUST report it. Do not ignore obvious damage.
+
               CRITICAL PRICING ALGORITHM:
               You MUST calculate the second-hand price using this strict step-by-step framework:
               1. Original Retail Price (ORP): Estimate the launch price in CNY.
@@ -545,9 +562,14 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
       setEditedResult(finalRes);
       onUpdate(finalRes);
       toast.success("价格已根据最新信息重新评估");
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      toast.error("价格评估更新失败");
+      const errorMessage = error?.message || String(error);
+      if (errorMessage.includes("429") || errorMessage.includes("quota")) {
+        toast.error("API 额度超限，请稍后再试或检查 API Key");
+      } else {
+        toast.error("价格评估更新失败");
+      }
     } finally {
       setIsUpdatingPrice(false);
     }
@@ -588,22 +610,47 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
       <div ref={resultRef} className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-5 space-y-6">
           <Card className="overflow-hidden bg-white shadow-xl border-0 rounded-2xl">
-            <div className="relative aspect-square bg-slate-50">
-              <img src={editedResult.imageUrl} alt="" className="w-full h-full object-contain p-4" />
-              <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 1000 1000">
-                {editedResult.boxes?.map((box, i) => {
+            <div className="relative bg-slate-50 flex items-center justify-center p-4">
+              <div className="relative w-full max-w-full">
+                <img src={mainImage} alt="" className="w-full h-auto block rounded-lg shadow-sm" />
+                {mainImage === editedResult.imageUrl && editedResult.boxes?.map((box, i) => {
                   const [ymin, xmin, ymax, xmax] = box.box_2d;
                   const color = box.type === 'item' ? '#2563eb' : '#ef4444';
+                  const top = `${(ymin / 1000) * 100}%`;
+                  const left = `${(xmin / 1000) * 100}%`;
+                  const width = `${((xmax - xmin) / 1000) * 100}%`;
+                  const height = `${((ymax - ymin) / 1000) * 100}%`;
+                  
                   return (
-                    <g key={i}>
-                      <rect x={xmin} y={ymin} width={xmax - xmin} height={ymax - ymin} fill="none" stroke={color} strokeWidth="4" rx="4" />
-                      <rect x={xmin} y={ymin - 35} width={120} height={35} fill={color} rx="4" />
-                      <text x={xmin + 8} y={ymin - 10} fill="white" fontSize="20" fontWeight="bold">{box.label}</text>
-                    </g>
+                    <div 
+                      key={i} 
+                      className="absolute border-2 rounded shadow-sm pointer-events-none"
+                      style={{ top, left, width, height, borderColor: color }}
+                    >
+                      <div 
+                        className="absolute -top-7 left-[-2px] px-2 py-1 text-xs font-bold text-white rounded shadow-sm whitespace-nowrap"
+                        style={{ backgroundColor: color }}
+                      >
+                        {box.label}
+                      </div>
+                    </div>
                   );
                 })}
-              </svg>
+              </div>
             </div>
+            {editedResult.imageUrls && editedResult.imageUrls.length > 1 && (
+              <div className="flex gap-2 p-4 overflow-x-auto bg-white border-t border-slate-100">
+                {editedResult.imageUrls.map((url, i) => (
+                  <button 
+                    key={i} 
+                    onClick={() => setMainImage(url)}
+                    className={`shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${mainImage === url ? 'border-blue-500 shadow-md' : 'border-transparent hover:border-slate-300'}`}
+                  >
+                    <img src={url} alt={`Thumbnail ${i+1}`} className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            )}
           </Card>
           <div className="flex items-center justify-between px-6 py-4 rounded-2xl bg-white shadow-sm border border-slate-100">
             <div className="flex items-center gap-2 text-green-600 font-bold">
@@ -665,6 +712,15 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
               </div>
 
               <Separator className="bg-slate-100" />
+
+              {editedResult.visual_analysis && (
+                <div className="space-y-4">
+                  <label className="text-[10px] text-slate-400 uppercase font-black tracking-widest">AI 视觉分析过程</label>
+                  <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-sm leading-relaxed">
+                    {editedResult.visual_analysis}
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-4">
                 <label className="text-[10px] text-slate-400 uppercase font-black tracking-widest">外观瑕疵检测</label>
@@ -799,6 +855,11 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
                 You are an AI specialized in second-hand digital item recognition, simulating a YOLOv8 model.
                 Analyze the image and return a JSON object.
                 
+                CRITICAL INSPECTION DIRECTIVE:
+                You must act as a strict, eagle-eyed quality inspector. Scrutinize the image for ANY physical damage.
+                STEP 1: Write a detailed visual analysis of the phone's surface. Explicitly check the glass back, screen, and edges.
+                STEP 2: If you see a crack, dent, or scratch, you MUST report it in the defects array. Do not ignore obvious damage like a cracked back cover.
+
                 CRITICAL PRICING ALGORITHM:
                 You MUST calculate the second-hand price using this strict step-by-step framework:
                 1. Original Retail Price (ORP): Estimate the launch price in CNY.
@@ -815,10 +876,11 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
                 
                 JSON Schema:
                 {
+                  "visual_analysis": "string (Detailed description of the item's physical condition in Chinese, explicitly mentioning if there are cracks, scratches, or if it is flawless. MUST BE IN CHINESE.)",
                   "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                   "brand": "string",
                   "model": "string",
-                  "defects": [{ "type": "划痕"|"磕碰"|"磨损", "location": "string", "severity": "轻微"|"明显" }],
+                  "defects": [{ "type": "划痕"|"磕碰"|"磨损"|"裂痕"|"碎裂"|"掉漆"|"其他", "location": "string", "severity": "轻微"|"明显"|"严重" }],
                   "boxes": [{ "label": "string", "box_2d": [0, 0, 100, 100], "type": "item"|"defect" }],
                   "confidence": 0.95,
                   "inferenceTime": 120,
@@ -841,16 +903,29 @@ const BatchRecognitionPage = ({ saveToHistory }: { saveToHistory: (res: Recognit
           ...data,
           id: Math.random().toString(36).substr(2, 9),
           timestamp: new Date().toISOString(),
-          imageUrl: files[i].preview,
+          imageUrl: `data:${file.type};base64,${base64Data}`,
           status: 'success'
         };
 
         setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'success', result } : f));
         saveToHistory(result);
-      } catch (err) {
+        
+        // Add a delay between requests to avoid hitting rate limits
+        if (i < files.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      } catch (err: any) {
         console.error("Batch processing error:", err);
-        toast.error(`图片 ${i + 1} 识别失败: ${err instanceof Error ? err.message : String(err)}`);
-        setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'error' } : f));
+        const errorMessage = err?.message || String(err);
+        if (errorMessage.includes("429") || errorMessage.includes("quota")) {
+          toast.error(`图片 ${i + 1} 识别失败: API 额度超限，请稍后再试或检查 API Key`);
+          // Stop processing further if quota is exceeded
+          setFiles(prev => prev.map((f, idx) => idx >= i ? { ...f, status: 'error' } : f));
+          break;
+        } else {
+          toast.error(`图片 ${i + 1} 识别失败: ${errorMessage}`);
+          setFiles(prev => prev.map(f => f.id === files[i].id ? { ...f, status: 'error' } : f));
+        }
       }
     }
     toast.success("批量识别完成");
@@ -1104,8 +1179,8 @@ const SettingsPage = ({ onClearHistory }: { onClearHistory: () => void }) => {
                   <p className="text-sm text-slate-500">删除本地存储的所有识别与估价数据</p>
                 </div>
                 <Dialog open={isClearDialogOpen} onOpenChange={setIsClearDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button variant="destructive">清空数据</Button>
+                  <DialogTrigger render={<Button variant="destructive" />}>
+                    清空数据
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader>
@@ -1133,6 +1208,102 @@ const SettingsPage = ({ onClearHistory }: { onClearHistory: () => void }) => {
   );
 };
 
+const ComprehensivePage = ({ onRecognize }: { onRecognize: (files: File[]) => void }) => {
+  const [dragActive, setDragActive] = useState(false);
+  const [files, setFiles] = useState<{file: File, preview: string}[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFiles = (newFiles: FileList | File[]) => {
+    const validFiles = Array.from(newFiles).filter(f => f.type.startsWith("image/"));
+    if (validFiles.length === 0) {
+      toast.error("请上传有效的图片文件");
+      return;
+    }
+    if (files.length + validFiles.length > 5) {
+      toast.error("最多只能上传 5 张图片");
+      return;
+    }
+    const newFileObjs = validFiles.map(f => ({
+      file: f,
+      preview: URL.createObjectURL(f)
+    }));
+    setFiles(prev => [...prev, ...newFileObjs]);
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="container mx-auto max-w-4xl px-4 py-12 animate-in slide-in-from-bottom-4 duration-500">
+      <div className="mb-12">
+        <h2 className="text-3xl font-black text-slate-900 mb-2 flex items-center gap-3">
+          <div className="h-8 w-8 bg-purple-600 rounded-lg flex items-center justify-center text-white">
+            <Scan size={18} />
+          </div>
+          全面深度识别
+        </h2>
+        <p className="text-slate-500">上传同一件数码产品的多角度照片（正面、背面、侧面、瑕疵细节等），AI 将进行综合评估，提供更精准的定损与估价。</p>
+      </div>
+
+      <div className="grid gap-8">
+        <Card 
+          className={`relative overflow-hidden border-2 border-dashed transition-all cursor-pointer shadow-sm ${dragActive ? 'border-purple-500 bg-purple-50' : 'border-slate-200 bg-white hover:border-purple-300'}`}
+          onDragEnter={() => setDragActive(true)}
+          onDragLeave={() => setDragActive(false)}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); setDragActive(false); if (e.dataTransfer.files) handleFiles(e.dataTransfer.files); }}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <div className="min-h-[300px] flex flex-col items-center justify-center p-8 text-center">
+            <input ref={fileInputRef} type="file" multiple className="hidden" accept="image/*" onChange={(e) => e.target.files && handleFiles(e.target.files)} />
+            
+            <div className="space-y-6 pointer-events-none">
+              <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-2xl bg-purple-50 text-purple-600 shadow-inner">
+                <Scan size={48} />
+              </div>
+              <div>
+                <p className="text-xl font-semibold text-slate-700 mb-2">点击或拖拽多张图片到此处</p>
+                <p className="text-sm text-slate-500">支持 JPG/PNG，最多 5 张，建议包含正反面及瑕疵特写</p>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {files.length > 0 && (
+          <div className="space-y-6">
+            <h3 className="text-lg font-semibold text-slate-800">已选择的图片 ({files.length}/5)</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+              {files.map((f, i) => (
+                <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-slate-200 group">
+                  <img src={f.preview} alt="" className="w-full h-full object-cover" />
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); removeFile(i); }}
+                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            
+            <div className="flex justify-end">
+              <Button 
+                size="lg" 
+                className="bg-purple-600 hover:bg-purple-700 text-white px-8 h-12 text-lg rounded-xl shadow-lg shadow-purple-200"
+                onClick={() => onRecognize(files.map(f => f.file))}
+              >
+                <Scan className="mr-2" size={20} />
+                开始全面评估
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // --- Main App ---
 
 export default function App() {
@@ -1141,50 +1312,298 @@ export default function App() {
   const [isRecognizing, setIsRecognizing] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem("recognition_history_v3");
-    if (saved) {
+    const loadHistory = async () => {
       try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) setHistory(parsed);
+        const saved = await localforage.getItem<RecognitionResult[]>("recognition_history_v4");
+        if (saved && Array.isArray(saved)) {
+          setHistory(saved);
+        } else {
+          // Fallback to localStorage for migration
+          const oldSaved = localStorage.getItem("recognition_history_v3");
+          if (oldSaved) {
+            const parsed = JSON.parse(oldSaved);
+            if (Array.isArray(parsed)) {
+              setHistory(parsed);
+              await localforage.setItem("recognition_history_v4", parsed);
+            }
+          }
+        }
       } catch (e) {
-        console.error("Failed to parse history", e);
+        console.error("Failed to load history", e);
       }
-    }
+    };
+    loadHistory();
   }, []);
 
-  const saveToHistory = (res: RecognitionResult | RecognitionResult[]) => {
+  const saveToHistory = async (res: RecognitionResult | RecognitionResult[]) => {
     setHistory(prev => {
       const newItems = Array.isArray(res) ? res : [res];
       const newHistory = [...newItems, ...prev].filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i).slice(0, 200);
-      try {
-        localStorage.setItem("recognition_history_v3", JSON.stringify(newHistory));
-      } catch (e) {
-        console.error("Failed to save history to localStorage:", e);
-      }
+      localforage.setItem("recognition_history_v4", newHistory).catch(e => {
+        console.error("Failed to save history to localforage:", e);
+      });
       return newHistory;
     });
   };
 
+  const handleComprehensiveRecognize = async (files: File[]) => {
+    setIsRecognizing(true);
+    try {
+      // 1. Local YOLO-like Detection on the FIRST image
+      const firstFile = files[0];
+      const img = new Image();
+      img.src = URL.createObjectURL(firstFile);
+      await new Promise((resolve) => { img.onload = resolve; });
+
+      toast.info("正在运行本地视觉模型进行目标定位...");
+      const detection = await detectDigitalItems(img);
+      
+      let firstImageBase64 = "";
+      let mainBox: any = null;
+      let isCropped = false;
+
+      if (detection) {
+        firstImageBase64 = cropImage(img, detection.bbox);
+        isCropped = true;
+        
+        const classMap: Record<string, string> = {
+          'cell phone': '手机',
+          'laptop': '笔记本电脑',
+          'tv': '显示器/平板电脑',
+          'mouse': '鼠标',
+          'keyboard': '键盘'
+        };
+        const coarseClass = classMap[detection.class] || detection.class;
+
+        mainBox = {
+          label: `${coarseClass} (置信度: ${(detection.score * 100).toFixed(1)}%)`,
+          box_2d: [
+            Math.round((detection.bbox[1] / img.height) * 1000),
+            Math.round((detection.bbox[0] / img.width) * 1000),
+            Math.round(((detection.bbox[1] + detection.bbox[3]) / img.height) * 1000),
+            Math.round(((detection.bbox[0] + detection.bbox[2]) / img.width) * 1000)
+          ],
+          type: 'item'
+        };
+      } else {
+        const reader = new FileReader();
+        firstImageBase64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(firstFile);
+        });
+      }
+
+      // Process remaining images normally
+      const remainingFiles = files.slice(1);
+      const remainingBase64Promises = remainingFiles.map(file => {
+        return new Promise<{data: string, mimeType: string}>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve({ data: (reader.result as string).split(",")[1], mimeType: file.type });
+          reader.onerror = (error) => reject(error);
+          reader.readAsDataURL(file);
+        });
+      });
+      
+      const remainingBase64Datas = await Promise.all(remainingBase64Promises);
+      
+      const parts: any[] = [
+        { inlineData: { data: firstImageBase64, mimeType: firstFile.type } },
+        ...remainingBase64Datas.map(b => ({ inlineData: { data: b.data, mimeType: b.mimeType } }))
+      ];
+
+      toast.info("正在调用大模型进行深度瑕疵检测与估价...");
+      parts.push({ text: `
+        You are an AI specialized in second-hand digital item recognition.
+        Analyze these MULTIPLE images of the SAME second-hand digital item from different angles.
+        ${isCropped ? "Note: The FIRST image provided is a CROPPED image focusing specifically on the detected digital item to avoid background interference." : ""}
+        Combine the information to give a comprehensive evaluation of its condition, defects, and price.
+        Return a JSON object.
+        
+        CRITICAL INSPECTION DIRECTIVE:
+        You must act as a strict, eagle-eyed quality inspector. Scrutinize the images for ANY physical damage.
+        STEP 1: Write a detailed visual analysis of the phone's surface. Explicitly check the glass back, screen, and edges.
+        STEP 2: If you see a crack, dent, or scratch, you MUST report it in the defects array. Do not ignore obvious damage like a cracked back cover.
+        STEP 3: For EVERY defect you find, you MUST provide a precise bounding box in the 'boxes' array to visually locate it on the FIRST image.
+
+        CRITICAL PRICING ALGORITHM:
+        You MUST calculate the second-hand price using this strict step-by-step framework:
+        1. Original Retail Price (ORP): Estimate the launch price in CNY.
+        2. Age Depreciation: Deduct 20-30% for the first year, and 10-15% for each subsequent year.
+        3. Condition Multiplier:
+           - Mint (No defects): 90-95% of depreciated value
+           - Good (Minor scratches): 75-85% of depreciated value
+           - Fair (Noticeable wear/dents): 60-70% of depreciated value
+           - Poor (Cracks, functional issues): 30-50% of depreciated value
+        4. Market Demand Adjustment: Adjust +/- 10% based on current brand/model popularity.
+        5. Final Calculation: Apply the above to determine a realistic Xianyu (闲鱼) market price range.
+        
+        Do NOT overestimate. Be extremely realistic and conservative.
+
+        JSON Schema:
+        {
+          "visual_analysis": "string (Detailed description of the item's physical condition in Chinese, explicitly mentioning if there are cracks, scratches, or if it is flawless. MUST BE IN CHINESE.)",
+          "category": "string (e.g., 手机, 笔记本, 平板)",
+          "brand": "string",
+          "model": "string",
+          "defects": [
+            {
+              "type": "划痕" | "磕碰" | "磨损" | "裂痕" | "碎裂" | "掉漆" | "其他",
+              "location": "string (e.g., 屏幕左上角, 背板)",
+              "severity": "轻微" | "明显" | "严重"
+            }
+          ],
+          "boxes": [
+            {
+              "label": "string (e.g., iPhone 13, 屏幕划痕)",
+              "box_2d": [ymin, xmin, ymax, xmax] (0-1000 normalized coordinates based on the FIRST image),
+              "type": "defect"
+            }
+          ],
+          "confidence": number,
+          "inferenceTime": number,
+          "estimatedPrice": {
+            "min": number,
+            "max": number,
+            "currency": "CNY",
+            "reasoning": "string in Chinese detailing the step-by-step calculation based on ALL images"
+          }
+        }
+      `});
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: { parts },
+        config: { responseMimeType: "application/json" }
+      });
+
+      const text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      const data = JSON.parse(text);
+
+      let defectBoxes = data.boxes || [];
+      if (isCropped && detection) {
+        const { sx, sy, sw, sh } = getCropInfo(img, detection.bbox);
+        defectBoxes = defectBoxes.map((box: any) => {
+          const [ymin, xmin, ymax, xmax] = box.box_2d;
+          const orig_ymin = (ymin / 1000) * sh + sy;
+          const orig_xmin = (xmin / 1000) * sw + sx;
+          const orig_ymax = (ymax / 1000) * sh + sy;
+          const orig_xmax = (xmax / 1000) * sw + sx;
+          return {
+            ...box,
+            box_2d: [
+              Math.round((orig_ymin / img.height) * 1000),
+              Math.round((orig_xmin / img.width) * 1000),
+              Math.round((orig_ymax / img.height) * 1000),
+              Math.round((orig_xmax / img.width) * 1000)
+            ]
+          };
+        });
+      }
+
+      // We need the original first image base64 for display
+      const firstImageOriginalBase64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(",")[1]);
+        reader.readAsDataURL(firstFile);
+      });
+
+      const result: RecognitionResult = {
+        ...data,
+        boxes: mainBox ? [mainBox, ...defectBoxes] : defectBoxes,
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        imageUrl: `data:${firstFile.type};base64,${firstImageOriginalBase64}`,
+        imageUrls: [
+          `data:${firstFile.type};base64,${firstImageOriginalBase64}`,
+          ...remainingBase64Datas.map(b => `data:${b.mimeType};base64,${b.data}`)
+        ],
+        status: 'success'
+      };
+
+      setCurrentResult(result);
+      saveToHistory(result);
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+      toast.success("全面识别与估价完成！");
+    } catch (error: any) {
+      console.error(error);
+      const errorMessage = error?.message || String(error);
+      if (errorMessage.includes("429") || errorMessage.includes("quota")) {
+        toast.error("API 额度超限，请稍后再试或检查 API Key");
+      } else {
+        toast.error("识别失败，请检查网络或图片质量");
+      }
+    } finally {
+      setIsRecognizing(false);
+    }
+  };
   const handleRecognize = async (file: File) => {
     setIsRecognizing(true);
     try {
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve, reject) => {
-        reader.onload = () => resolve((reader.result as string).split(",")[1]);
-        reader.onerror = (error) => reject(error);
-        reader.readAsDataURL(file);
-      });
-      const base64Data = await base64Promise;
+      // 1. Load Image
+      const img = new Image();
+      img.src = URL.createObjectURL(file);
+      await new Promise((resolve) => { img.onload = resolve; });
 
+      // 2. Local YOLO-like Detection
+      toast.info("正在运行本地视觉模型进行目标定位...");
+      const detection = await detectDigitalItems(img);
+      
+      let base64Data = "";
+      let mainBox: any = null;
+      let isCropped = false;
+
+      if (detection) {
+        // 3. Crop Image if item found
+        base64Data = cropImage(img, detection.bbox);
+        isCropped = true;
+        
+        const classMap: Record<string, string> = {
+          'cell phone': '手机',
+          'laptop': '笔记本电脑',
+          'tv': '显示器/平板电脑',
+          'mouse': '鼠标',
+          'keyboard': '键盘'
+        };
+        const coarseClass = classMap[detection.class] || detection.class;
+
+        mainBox = {
+          label: `${coarseClass} (置信度: ${(detection.score * 100).toFixed(1)}%)`,
+          box_2d: [
+            Math.round((detection.bbox[1] / img.height) * 1000),
+            Math.round((detection.bbox[0] / img.width) * 1000),
+            Math.round(((detection.bbox[1] + detection.bbox[3]) / img.height) * 1000),
+            Math.round(((detection.bbox[0] + detection.bbox[2]) / img.width) * 1000)
+          ],
+          type: 'item'
+        };
+      } else {
+        // Fallback to original image
+        const reader = new FileReader();
+        base64Data = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      }
+
+      toast.info("正在调用大模型进行深度瑕疵检测与估价...");
       const response = await ai.models.generateContent({
         model: "gemini-2.0-flash",
         contents: {
           parts: [
             { inlineData: { data: base64Data, mimeType: file.type } },
             { text: `
-              You are an AI specialized in second-hand digital item recognition, simulating a YOLOv8 model.
+              You are an AI specialized in second-hand digital item recognition.
+              ${isCropped ? "Note: The image provided is a CROPPED image focusing specifically on the detected digital item to avoid background interference." : ""}
               Analyze the image and return a JSON object.
               
+              CRITICAL INSPECTION DIRECTIVE:
+              You must act as a strict, eagle-eyed quality inspector. Scrutinize the image for ANY physical damage.
+              STEP 1: Write a detailed visual analysis of the phone's surface. Explicitly check the glass back, screen, and edges.
+              STEP 2: If you see a crack, dent, or scratch, you MUST report it in the defects array. Do not ignore obvious damage like a cracked back cover.
+              STEP 3: For EVERY defect you find, you MUST provide a precise bounding box in the 'boxes' array to visually locate it on the image.
+
               CRITICAL PRICING ALGORITHM:
               You MUST calculate the second-hand price using this strict step-by-step framework:
               1. Original Retail Price (ORP): Estimate the launch price in CNY.
@@ -1201,11 +1620,12 @@ export default function App() {
               
               JSON Schema:
               {
+                "visual_analysis": "string (Detailed description of the item's physical condition in Chinese, explicitly mentioning if there are cracks, scratches, or if it is flawless. MUST BE IN CHINESE.)",
                 "category": "string (MUST be exactly one of: 手机, 笔记本电脑, 平板电脑, 耳机/音响, 智能穿戴, 键盘, 鼠标, 显示器, 数码相机, 游戏机, 其他数码)",
                 "brand": "string",
                 "model": "string",
-                "defects": [{ "type": "划痕"|"磕碰"|"磨损", "location": "string", "severity": "轻微"|"明显" }],
-                "boxes": [{ "label": "string", "box_2d": [0, 0, 100, 100], "type": "item"|"defect" }],
+                "defects": [{ "type": "划痕"|"磕碰"|"磨损"|"裂痕"|"碎裂"|"掉漆"|"其他", "location": "string", "severity": "轻微"|"明显"|"严重" }],
+                "boxes": [{ "label": "string", "box_2d": [ymin, xmin, ymax, xmax] (0-1000 normalized coordinates), "type": "defect" }],
                 "confidence": 0.95,
                 "inferenceTime": 120,
                 "estimatedPrice": { "min": 1000, "max": 2000, "currency": "CNY", "reasoning": "string in Chinese detailing the step-by-step calculation: Original Price -> Age Depreciation -> Condition Multiplier -> Market Adjustment -> Final Price" }
@@ -1226,11 +1646,37 @@ export default function App() {
         return;
       }
 
+      let defectBoxes = data.boxes || [];
+      if (isCropped && detection) {
+        const { sx, sy, sw, sh } = getCropInfo(img, detection.bbox);
+        defectBoxes = defectBoxes.map((box: any) => {
+          const [ymin, xmin, ymax, xmax] = box.box_2d;
+          const orig_ymin = (ymin / 1000) * sh + sy;
+          const orig_xmin = (xmin / 1000) * sw + sx;
+          const orig_ymax = (ymax / 1000) * sh + sy;
+          const orig_xmax = (xmax / 1000) * sw + sx;
+          return {
+            ...box,
+            box_2d: [
+              Math.round((orig_ymin / img.height) * 1000),
+              Math.round((orig_xmin / img.width) * 1000),
+              Math.round((orig_ymax / img.height) * 1000),
+              Math.round((orig_xmax / img.width) * 1000)
+            ]
+          };
+        });
+      }
+
       const result: RecognitionResult = {
         ...data,
+        boxes: mainBox ? [mainBox, ...defectBoxes] : defectBoxes,
         id: Math.random().toString(36).substr(2, 9),
         timestamp: new Date().toISOString(),
-        imageUrl: URL.createObjectURL(file),
+        imageUrl: `data:${file.type};base64,${await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.readAsDataURL(file);
+        })}`,
         status: 'success'
       };
 
@@ -1238,9 +1684,14 @@ export default function App() {
       saveToHistory(result);
       confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
       toast.success("识别与估价完成！");
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      toast.error("识别失败，请检查网络或图片质量");
+      const errorMessage = error?.message || String(error);
+      if (errorMessage.includes("429") || errorMessage.includes("quota")) {
+        toast.error("API 额度超限，请稍后再试或检查 API Key");
+      } else {
+        toast.error("识别失败，请检查网络或图片质量");
+      }
     } finally {
       setIsRecognizing(false);
     }
@@ -1300,7 +1751,7 @@ export default function App() {
                         <h2 className="text-3xl font-bold text-slate-900">识别历史</h2>
                         <p className="text-slate-500">管理所有已完成的数码产品检测记录</p>
                       </div>
-                      <Button variant="destructive" size="sm" className="gap-2" onClick={() => { setHistory([]); localStorage.removeItem("recognition_history_v3"); }}>
+                      <Button variant="destructive" size="sm" className="gap-2" onClick={() => { setHistory([]); localforage.removeItem("recognition_history_v4"); }}>
                         <Trash2 size={16} /> 清空所有记录
                       </Button>
                     </div>
@@ -1334,9 +1785,20 @@ export default function App() {
                     </div>
                   </div>
                 } />
+                <Route path="/comprehensive" element={
+                  currentResult ? (
+                    <ResultPage 
+                      result={currentResult} 
+                      onReset={() => setCurrentResult(null)} 
+                      onUpdate={(res) => { setCurrentResult(res); saveToHistory(res); }}
+                    />
+                  ) : (
+                    <ComprehensivePage onRecognize={handleComprehensiveRecognize} />
+                  )
+                } />
                 <Route path="/batch" element={<BatchRecognitionPage saveToHistory={saveToHistory} />} />
                 <Route path="/profile" element={<ProfilePage history={history} />} />
-                <Route path="/settings" element={<SettingsPage onClearHistory={() => { setHistory([]); localStorage.removeItem("recognition_history_v3"); }} />} />
+                <Route path="/settings" element={<SettingsPage onClearHistory={() => { setHistory([]); localforage.removeItem("recognition_history_v4"); }} />} />
                 <Route path="/camera" element={
                   <div className="p-8">
                     <div className="mb-12">
