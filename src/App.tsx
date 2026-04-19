@@ -52,7 +52,7 @@ import { Separator } from "@/components/ui/separator";
 import { Toaster, toast } from "sonner";
 import { GoogleGenAI } from "@google/genai";
 import localforage from "localforage";
-import { detectDigitalItems, cropImage, getCropInfo } from "./lib/detector";
+import { detectDigitalItems, cropImage, getCropInfo, initDetector } from "./lib/detector";
 import { RecognitionResult, Defect, BoundingBox } from "./types";
 import html2canvas from "html2canvas";
 import confetti from "canvas-confetti";
@@ -70,6 +70,48 @@ import {
   AreaChart,
   Area
 } from 'recharts';
+
+// Helper function to compress images before sending to API to prevent XHR/payload size RPC errors
+const compressImage = async (file: File | string, maxWidth = 1024, maxHeight = 1024, quality = 0.8): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        // Fallback if canvas fails
+        resolve(typeof file === 'string' ? file.split(',')[1] || file : '');
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/jpeg", quality).split(',')[1]);
+    };
+    img.onerror = reject;
+    if (typeof file === 'string') {
+      img.src = file.startsWith('data:') ? file : `data:image/jpeg;base64,${file}`;
+    } else {
+      img.src = URL.createObjectURL(file);
+    }
+  });
+};
 
 // --- AI Initialization ---
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
@@ -1312,6 +1354,14 @@ export default function App() {
   const [isRecognizing, setIsRecognizing] = useState(false);
 
   useEffect(() => {
+    // 1. Pre-warm local YOLO model in the background immediately
+    setTimeout(() => {
+      initDetector()
+        .then(() => console.log("YOLOv8 initialized in the background"))
+        .catch(e => console.error("Failed to warmup YOLO model:", e));
+    }, 500);
+
+    // 2. Load History
     const loadHistory = async () => {
       try {
         const saved = await localforage.getItem<RecognitionResult[]>("recognition_history_v4");
@@ -1401,7 +1451,12 @@ export default function App() {
         return { img, file, index, detection, base64, originalBase64, isCropped, cropInfo, mainBox };
       }));
       
-      const parts: any[] = processedImages.map(p => ({ inlineData: { data: p.base64, mimeType: p.file.type } }));
+      const parts: any[] = await Promise.all(processedImages.map(async p => ({ 
+        inlineData: { 
+          data: await compressImage(`data:${p.file.type};base64,${p.base64}`, 1024, 1024, 0.85), 
+          mimeType: "image/jpeg" // compressed are always jpeg
+        } 
+      })));
 
       toast.info("正在调用大模型进行深度瑕疵检测与估价...");
       parts.push({ text: `
@@ -1550,9 +1605,11 @@ export default function App() {
       console.error(error);
       const errorMessage = error?.message || String(error);
       if (errorMessage.includes("429") || errorMessage.includes("quota")) {
-        toast.error("API 额度超限，请稍后再试或检查 API Key");
+        toast.error("大模型当前请求过多（触发限流警告），请稍后再试或减少上传的图片数量！");
+      } else if (errorMessage.includes("Rpc failed") || errorMessage.includes("xhr error")) {
+        toast.error("图片上传失败（网络波动或多图体积过大已超出负载），已尝试自动压缩。请稍后重试。");
       } else {
-        toast.error("识别失败，请检查网络或图片质量");
+        toast.error("识别失败，请检查网络或重新上传");
       }
     } finally {
       setIsRecognizing(false);
@@ -1608,12 +1665,14 @@ export default function App() {
         });
       }
 
+      const compressedBase64 = await compressImage(`data:${file.type};base64,${base64Data}`, 1024, 1024, 0.85);
+
       toast.info("正在调用大模型进行深度瑕疵检测与估价...");
       const response = await ai.models.generateContent({
         model: "gemini-2.0-flash",
         contents: {
           parts: [
-            { inlineData: { data: base64Data, mimeType: file.type } },
+            { inlineData: { data: compressedBase64, mimeType: "image/jpeg" } },
             { text: `
               You are an AI specialized in second-hand digital item recognition.
               ${isCropped ? "Note: The image provided is a CROPPED image focusing specifically on the detected digital item to avoid background interference." : ""}
@@ -1741,9 +1800,11 @@ export default function App() {
       console.error(error);
       const errorMessage = error?.message || String(error);
       if (errorMessage.includes("429") || errorMessage.includes("quota")) {
-        toast.error("API 额度超限，请稍后再试或检查 API Key");
+        toast.error("大模型当前请求过多（触发限流警告），请稍后再试！");
+      } else if (errorMessage.includes("Rpc failed") || errorMessage.includes("xhr error")) {
+        toast.error("图片上传失败（网络波动或单图体积过大已超出负载），已尝试自动压缩。请稍后重试。");
       } else {
-        toast.error("识别失败，请检查网络或图片质量");
+        toast.error("识别失败，请检查网络或重新上传");
       }
     } finally {
       setIsRecognizing(false);
