@@ -613,7 +613,7 @@ const ResultPage = ({ result, onReset, onUpdate }: { result: RecognitionResult, 
             <div className="relative bg-slate-50 flex items-center justify-center p-4">
               <div className="relative w-full max-w-full">
                 <img src={mainImage} alt="" className="w-full h-auto block rounded-lg shadow-sm" />
-                {mainImage === editedResult.imageUrl && editedResult.boxes?.map((box, i) => {
+                {editedResult.boxes?.filter(b => (b.imageIndex || 0) === (editedResult.imageUrls?.indexOf(mainImage) > -1 ? editedResult.imageUrls.indexOf(mainImage) : 0)).map((box, i) => {
                   const [ymin, xmin, ymax, xmax] = box.box_2d;
                   const color = box.type === 'item' ? '#2563eb' : '#ef4444';
                   const top = `${(ymin / 1000) * 100}%`;
@@ -1349,82 +1349,73 @@ export default function App() {
   const handleComprehensiveRecognize = async (files: File[]) => {
     setIsRecognizing(true);
     try {
-      // 1. Local YOLO-like Detection on the FIRST image
-      const firstFile = files[0];
-      const img = new Image();
-      img.src = URL.createObjectURL(firstFile);
-      await new Promise((resolve) => { img.onload = resolve; });
+      toast.info("正在运行本地视觉模型对所有图片进行目标定位...");
 
-      toast.info("正在运行本地视觉模型进行目标定位...");
-      const detection = await detectDigitalItems(img);
-      
-      let firstImageBase64 = "";
-      let mainBox: any = null;
-      let isCropped = false;
+      const processedImages = await Promise.all(files.map(async (file, index) => {
+        const img = new Image();
+        img.src = URL.createObjectURL(file);
+        await new Promise((resolve) => { img.onload = resolve; });
 
-      if (detection) {
-        firstImageBase64 = cropImage(img, detection.bbox);
-        isCropped = true;
-        
-        const classMap: Record<string, string> = {
-          'cell phone': '手机',
-          'laptop': '笔记本电脑',
-          'tv': '显示器/平板电脑',
-          'mouse': '鼠标',
-          'keyboard': '键盘'
-        };
-        const coarseClass = classMap[detection.class] || detection.class;
+        const detection = await detectDigitalItems(img);
+        let base64 = "";
+        let isCropped = false;
+        let cropInfo: any = null;
+        let mainBox: any = null;
 
-        mainBox = {
-          label: `${coarseClass} (置信度: ${(detection.score * 100).toFixed(1)}%)`,
-          box_2d: [
-            Math.round((detection.bbox[1] / img.height) * 1000),
-            Math.round((detection.bbox[0] / img.width) * 1000),
-            Math.round(((detection.bbox[1] + detection.bbox[3]) / img.height) * 1000),
-            Math.round(((detection.bbox[0] + detection.bbox[2]) / img.width) * 1000)
-          ],
-          type: 'item'
-        };
-      } else {
-        const reader = new FileReader();
-        firstImageBase64 = await new Promise<string>((resolve, reject) => {
+        const originalBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
           reader.onload = () => resolve((reader.result as string).split(",")[1]);
           reader.onerror = reject;
-          reader.readAsDataURL(firstFile);
-        });
-      }
-
-      // Process remaining images normally
-      const remainingFiles = files.slice(1);
-      const remainingBase64Promises = remainingFiles.map(file => {
-        return new Promise<{data: string, mimeType: string}>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve({ data: (reader.result as string).split(",")[1], mimeType: file.type });
-          reader.onerror = (error) => reject(error);
           reader.readAsDataURL(file);
         });
-      });
+
+        if (detection) {
+          base64 = cropImage(img, detection.bbox);
+          isCropped = true;
+          cropInfo = getCropInfo(img, detection.bbox);
+          
+          const classMap: Record<string, string> = {
+            'cell phone': '手机',
+            'laptop': '笔记本电脑',
+            'tv': '显示器/平板电脑',
+            'mouse': '鼠标',
+            'keyboard': '键盘'
+          };
+          const coarseClass = classMap[detection.class] || detection.class;
+
+          mainBox = {
+            label: `${coarseClass} (置信度: ${(detection.score * 100).toFixed(1)}%)`,
+            box_2d: [
+              Math.round((detection.bbox[1] / img.height) * 1000),
+              Math.round((detection.bbox[0] / img.width) * 1000),
+              Math.round(((detection.bbox[1] + detection.bbox[3]) / img.height) * 1000),
+              Math.round(((detection.bbox[0] + detection.bbox[2]) / img.width) * 1000)
+            ],
+            type: 'item',
+            imageIndex: index
+          };
+        } else {
+          base64 = originalBase64;
+        }
+
+        return { img, file, index, detection, base64, originalBase64, isCropped, cropInfo, mainBox };
+      }));
       
-      const remainingBase64Datas = await Promise.all(remainingBase64Promises);
-      
-      const parts: any[] = [
-        { inlineData: { data: firstImageBase64, mimeType: firstFile.type } },
-        ...remainingBase64Datas.map(b => ({ inlineData: { data: b.data, mimeType: b.mimeType } }))
-      ];
+      const parts: any[] = processedImages.map(p => ({ inlineData: { data: p.base64, mimeType: p.file.type } }));
 
       toast.info("正在调用大模型进行深度瑕疵检测与估价...");
       parts.push({ text: `
         You are an AI specialized in second-hand digital item recognition.
         Analyze these MULTIPLE images of the SAME second-hand digital item from different angles.
-        ${isCropped ? "Note: The FIRST image provided is a CROPPED image focusing specifically on the detected digital item to avoid background interference." : ""}
+        Some images may be cropped to focus purely on the device.
         Combine the information to give a comprehensive evaluation of its condition, defects, and price.
         Return a JSON object.
         
         CRITICAL INSPECTION DIRECTIVE:
-        You must act as a strict, eagle-eyed quality inspector. Scrutinize the images for ANY physical damage.
+        You must act as a strict, eagle-eyed quality inspector. Scrutinize all images for ANY physical damage.
         STEP 1: Write a detailed visual analysis of the phone's surface. Explicitly check the glass back, screen, and edges.
         STEP 2: If you see a crack, dent, or scratch, you MUST report it in the defects array. Do not ignore obvious damage like a cracked back cover.
-        STEP 3: For EVERY defect you find, you MUST provide a precise bounding box in the 'boxes' array to visually locate it on the FIRST image.
+        STEP 3: For EVERY defect you find, you MUST provide a precise bounding box in the 'boxes' array to visually locate it, AND explicitly specify the 'imageIndex' (0 for the first image, 1 for the second image, etc.) where the defect is visible.
 
         CRITICAL PRICING ALGORITHM:
         You MUST calculate the second-hand price using this strict step-by-step framework:
@@ -1456,8 +1447,9 @@ export default function App() {
           "boxes": [
             {
               "label": "string (e.g., iPhone 13, 屏幕划痕)",
-              "box_2d": [ymin, xmin, ymax, xmax] (0-1000 normalized coordinates based on the FIRST image),
-              "type": "defect"
+              "box_2d": [ymin, xmin, ymax, xmax] (0-1000 normalized coordinates based on the specific cropped image sent),
+              "type": "defect",
+              "imageIndex": 0
             }
           ],
           "confidence": number,
@@ -1477,13 +1469,44 @@ export default function App() {
         config: { responseMimeType: "application/json" }
       });
 
-      const text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
-      const data = JSON.parse(text);
+      let text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("JSON parse failed, attempting to fix...", e, text);
+        // Sometimes Gemini returns incomplete JSON, we can try to append closing brackets if missing
+        if (!text.endsWith("}")) {
+          text = text + "}";
+        }
+        try {
+          data = JSON.parse(text);
+        } catch (e2) {
+          toast.error("大模型返回的数据格式异常，无法解析报告。");
+          setIsRecognizing(false);
+          return;
+        }
+      }
+
+      if (data.error) {
+        toast.error(data.error);
+        setIsRecognizing(false);
+        return;
+      }
 
       let defectBoxes = data.boxes || [];
-      if (isCropped && detection) {
-        const { sx, sy, sw, sh } = getCropInfo(img, detection.bbox);
-        defectBoxes = defectBoxes.map((box: any) => {
+      defectBoxes = defectBoxes.map((box: any) => {
+        const imgIndex = box.imageIndex || 0;
+        const processed = processedImages[imgIndex];
+        
+        // Ensure box_2d is a valid array of 4 numbers
+        if (!Array.isArray(box.box_2d) || box.box_2d.length < 4) {
+          return { ...box, box_2d: [0, 0, 0, 0], imageIndex: imgIndex };
+        }
+
+        if (processed && processed.isCropped && processed.cropInfo) {
+          const { sx, sy, sw, sh } = processed.cropInfo;
           const [ymin, xmin, ymax, xmax] = box.box_2d;
           const orig_ymin = (ymin / 1000) * sh + sy;
           const orig_xmin = (xmin / 1000) * sw + sx;
@@ -1492,32 +1515,30 @@ export default function App() {
           return {
             ...box,
             box_2d: [
-              Math.round((orig_ymin / img.height) * 1000),
-              Math.round((orig_xmin / img.width) * 1000),
-              Math.round((orig_ymax / img.height) * 1000),
-              Math.round((orig_xmax / img.width) * 1000)
-            ]
+              Math.min(1000, Math.max(0, Math.round((orig_ymin / processed.img.height) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_xmin / processed.img.width) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_ymax / processed.img.height) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_xmax / processed.img.width) * 1000)))
+            ],
+            imageIndex: imgIndex
           };
-        });
-      }
-
-      // We need the original first image base64 for display
-      const firstImageOriginalBase64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(",")[1]);
-        reader.readAsDataURL(firstFile);
+        }
+        return {
+          ...box,
+          box_2d: box.box_2d.map((v: number) => Math.min(1000, Math.max(0, Number(v) || 0))),
+          imageIndex: imgIndex
+        };
       });
+
+      const mainBoxes = processedImages.map(p => p.mainBox).filter(Boolean);
 
       const result: RecognitionResult = {
         ...data,
-        boxes: mainBox ? [mainBox, ...defectBoxes] : defectBoxes,
+        boxes: [...mainBoxes, ...defectBoxes],
         id: Math.random().toString(36).substr(2, 9),
         timestamp: new Date().toISOString(),
-        imageUrl: `data:${firstFile.type};base64,${firstImageOriginalBase64}`,
-        imageUrls: [
-          `data:${firstFile.type};base64,${firstImageOriginalBase64}`,
-          ...remainingBase64Datas.map(b => `data:${b.mimeType};base64,${b.data}`)
-        ],
+        imageUrl: `data:${processedImages[0].file.type};base64,${processedImages[0].originalBase64}`,
+        imageUrls: processedImages.map(p => `data:${p.file.type};base64,${p.originalBase64}`),
         status: 'success'
       };
 
@@ -1639,10 +1660,25 @@ export default function App() {
         config: { responseMimeType: "application/json" }
       });
 
-      const text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
-      const data = JSON.parse(text);
+      let text = response.text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("JSON parse failed, attempting to fix...", e, text);
+        if (!text.endsWith("}")) text += "}";
+        try {
+          data = JSON.parse(text);
+        } catch (e2) {
+          toast.error("大模型返回的数据格式异常，无法解析报告。");
+          setIsRecognizing(false);
+          return;
+        }
+      }
+      
       if (data.error) {
         toast.error(data.error);
+        setIsRecognizing(false);
         return;
       }
 
@@ -1650,6 +1686,9 @@ export default function App() {
       if (isCropped && detection) {
         const { sx, sy, sw, sh } = getCropInfo(img, detection.bbox);
         defectBoxes = defectBoxes.map((box: any) => {
+          if (!Array.isArray(box.box_2d) || box.box_2d.length < 4) {
+            return { ...box, box_2d: [0, 0, 0, 0], imageIndex: 0 };
+          }
           const [ymin, xmin, ymax, xmax] = box.box_2d;
           const orig_ymin = (ymin / 1000) * sh + sy;
           const orig_xmin = (xmin / 1000) * sw + sx;
@@ -1658,14 +1697,28 @@ export default function App() {
           return {
             ...box,
             box_2d: [
-              Math.round((orig_ymin / img.height) * 1000),
-              Math.round((orig_xmin / img.width) * 1000),
-              Math.round((orig_ymax / img.height) * 1000),
-              Math.round((orig_xmax / img.width) * 1000)
-            ]
+              Math.min(1000, Math.max(0, Math.round((orig_ymin / img.height) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_xmin / img.width) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_ymax / img.height) * 1000))),
+              Math.min(1000, Math.max(0, Math.round((orig_xmax / img.width) * 1000)))
+            ],
+            imageIndex: 0
+          };
+        });
+      } else {
+        defectBoxes = defectBoxes.map((box: any) => {
+          if (!Array.isArray(box.box_2d) || box.box_2d.length < 4) {
+            return { ...box, box_2d: [0, 0, 0, 0], imageIndex: 0 };
+          }
+          return {
+            ...box,
+            box_2d: box.box_2d.map((v: number) => Math.min(1000, Math.max(0, Number(v) || 0))),
+            imageIndex: 0
           };
         });
       }
+      
+      if (mainBox) mainBox.imageIndex = 0;
 
       const result: RecognitionResult = {
         ...data,

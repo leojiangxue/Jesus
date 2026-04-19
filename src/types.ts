@@ -8,6 +8,7 @@ export interface BoundingBox {
   label: string;
   box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax]
   type: "item" | "defect";
+  imageIndex?: number;
 }
 
 export interface RecognitionResult {
